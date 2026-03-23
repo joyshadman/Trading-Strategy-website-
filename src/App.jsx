@@ -52,15 +52,15 @@ export default function App() {
       {/* 1. TOP NAVIGATION BAR */}
       <nav className="border-b border-white/5 bg-[#020617]/80 backdrop-blur-xl sticky top-0 z-50 px-6 py-4">
         <div className="max-w-[1600px] mx-auto flex flex-col md:row justify-between items-center gap-6">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 mt-20">
             <div className="bg-gradient-to-tr from-blue-600 to-indigo-600 p-2.5 rounded-2xl shadow-[0_0_20px_rgba(37,99,235,0.3)] animate-pulse">
               <Zap size={22} className="text-white fill-current" />
             </div>
             <div>
-              <h1 className="text-2xl font-black tracking-tighter text-white bg-clip-text">NEURAL.TRADER</h1>
+              <h1 className="text-2xl font-black tracking-tighter text-white bg-clip-text">TRADE PREDECTION</h1>
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></span>
-                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.2em]">Alpha Engine v2026.03</p>
+                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-[0.2em]">Quant v2026.03</p>
               </div>
             </div>
           </div>
@@ -71,7 +71,7 @@ export default function App() {
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-blue-400 transition-colors" size={18} />
               <input 
                 type="text"
-                placeholder="Search Exness Pairs..."
+                placeholder="Search Pairs..."
                 className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-12 pr-4 text-sm focus:outline-none focus:border-blue-500/50 focus:ring-4 ring-blue-500/10 transition-all backdrop-blur-md text-white placeholder:text-slate-600"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
