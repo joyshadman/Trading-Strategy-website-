@@ -1,32 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   History, 
-  CheckCircle2, 
-  XCircle, 
   Clock, 
   ExternalLink, 
   Zap, 
   TrendingUp, 
-  TrendingDown 
+  TrendingDown,
+  Flame,
+  Layers,
+  BarChart3
 } from 'lucide-react';
 
-const SignalHistory = ({ currentSignal }) => {
+const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
   const [history, setHistory] = useState([
-    { id: 1, pair: 'BTCUSDT', type: 'BUY', result: 'WIN', profit: '+1.2%', time: '10:30 AM' },
-    { id: 2, pair: 'EURUSD', type: 'SELL', result: 'LOSS', profit: '-0.4%', time: '09:15 AM' },
+    { id: 1, pair: 'BTCUSDT', type: 'BUY', result: 'WIN', profit: '+1.2%', time: '10:30 AM', overlap: true },
+    { id: 2, pair: 'EURUSD', type: 'SELL', result: 'LOSS', profit: '-0.4%', time: '09:15 AM', overlap: false },
   ]);
 
-  const lastProcessedSignalRef = useRef(null);
+  // Anti-Spam: Store a set of unique signal keys to prevent duplicates
+  const processedSignals = useRef(new Set());
+
+  const isOverlap = activeSessions.includes('London') && activeSessions.includes('New York');
+  const sessionCount = activeSessions.length;
 
   useEffect(() => {
-    // Guard: Ensure signal exists and meets the confidence threshold
+    // 1. Strict Filter: Only log high confidence and existing signals
     if (!currentSignal || currentSignal.confidence < 90) return;
 
-    // Create a unique hash for this signal to prevent duplicate entries
-    const signalKey = `${currentSignal.pair}-${currentSignal.type}-${Math.floor(currentSignal.price)}`;
+    // 2. Generate unique key (Pair + Type + 5-min time window to prevent re-logging same move)
+    const timeWindow = new Date().getMinutes() - (new Date().getMinutes() % 5);
+    const signalKey = `${currentSignal.pair}-${currentSignal.type}-${timeWindow}`;
 
-    if (lastProcessedSignalRef.current !== signalKey) {
-      lastProcessedSignalRef.current = signalKey;
+    if (!processedSignals.current.has(signalKey)) {
+      processedSignals.current.add(signalKey);
 
       const newEntry = {
         id: Date.now(),
@@ -34,74 +41,117 @@ const SignalHistory = ({ currentSignal }) => {
         type: currentSignal.type,
         result: 'PENDING',
         profit: 'Targeting...',
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        overlap: isOverlap 
       };
 
-      // Keep only the last 8 entries for performance and layout
-      setHistory(prev => [newEntry, ...prev].slice(0, 8));
+      setHistory(prev => [newEntry, ...prev].slice(0, 6)); // Keep log short & clean
     }
-  }, [currentSignal]);
+  }, [currentSignal, isOverlap]);
 
   return (
-    <div className="bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-[2.5rem] p-7 shadow-2xl h-full transition-all duration-500 flex flex-col">
-      <div className="flex justify-between items-center mb-8">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-500/10 rounded-xl border border-blue-500/20">
-            <History size={20} className="text-blue-400" />
+    <div className={`relative bg-slate-950/40 backdrop-blur-2xl border rounded-[3rem] p-8 shadow-2xl h-full transition-all duration-1000 flex flex-col overflow-hidden ${isOverlap ? 'border-blue-500/30 ring-1 ring-blue-500/10' : 'border-white/5'}`}>
+      
+      {/* Background Pulse during Overlap */}
+      <AnimatePresence>
+        {isOverlap && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="absolute -top-10 -right-10 w-64 h-64 bg-blue-600/5 blur-[100px] pointer-events-none"
+          />
+        )}
+      </AnimatePresence>
+
+      <div className="flex justify-between items-center mb-10 relative z-10">
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 bg-blue-500/10 rounded-2xl border border-blue-500/20">
+            <History size={22} className="text-blue-400" />
           </div>
-          <h3 className="text-xl font-black text-white tracking-tighter">Signal Log</h3>
+          <div>
+            <h3 className="text-xl font-black text-white tracking-tighter uppercase italic">Neural Log</h3>
+            <p className="text-[9px] font-black text-slate-500 tracking-[0.3em] uppercase">High Conviction Only</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 rounded-full border border-emerald-500/20">
-          <Zap size={12} className="text-emerald-400 fill-emerald-400" />
-          <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">
-            Live Feed Active
+        
+        <div className="flex items-center gap-2">
+          <div className={`px-4 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all duration-500 ${isOverlap ? 'bg-blue-500/20 border-blue-500/40 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)]' : 'bg-white/5 border-white/10 text-slate-500'}`}>
+            <Layers size={12} className={isOverlap ? 'animate-pulse' : ''} />
+            {isOverlap ? 'Overlap Peak' : 'Standard'}
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3 flex-1 relative z-10 overflow-y-auto no-scrollbar pr-2">
+        <AnimatePresence initial={false}>
+          {history.map((item, index) => (
+            <motion.div 
+              key={item.id} 
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className={`group flex items-center justify-between p-5 rounded-[2rem] border transition-all duration-500 ${item.result === 'PENDING' ? 'bg-blue-500/5 border-blue-500/20' : 'bg-white/[0.02] border-white/5 hover:bg-white/[0.05]'}`}
+            >
+              <div className="flex items-center gap-5">
+                <div className="relative">
+                  <div className={`p-3 rounded-2xl ${item.type === 'BUY' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                    {item.type === 'BUY' ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
+                  </div>
+                  {item.overlap && (
+                    <div className="absolute -top-1 -right-1 bg-blue-500 rounded-full p-1 border-2 border-slate-950">
+                      <Flame size={8} className="text-white fill-white" />
+                    </div>
+                  )}
+                </div>
+                
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <span className="font-black text-base text-white tracking-tight">{item.pair}</span>
+                    <span className={`text-[8px] font-black px-2 py-0.5 rounded-md border ${item.type === 'BUY' ? 'border-emerald-500/30 text-emerald-400' : 'border-rose-500/30 text-rose-400'}`}>
+                      {item.type}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-tighter">
+                    <Clock size={10} className="text-blue-500/50" /> {item.time}
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <div className={`text-sm font-black tracking-tighter ${item.result === 'WIN' ? 'text-emerald-400' : item.result === 'LOSS' ? 'text-rose-400' : 'text-blue-400 animate-pulse'}`}>
+                  {item.profit}
+                </div>
+                <button className="opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 text-[9px] text-blue-500/60 ml-auto uppercase font-black tracking-tighter mt-1 hover:text-blue-400">
+                  Proof <ExternalLink size={10} />
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Volume Intensity Bar */}
+      <div className="mt-8 pt-8 border-t border-white/5 relative z-10">
+        <div className="flex justify-between items-end mb-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 size={14} className="text-slate-500" />
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Global Intensity</span>
+          </div>
+          <span className={`text-[10px] font-black uppercase ${isOverlap ? 'text-blue-400 animate-pulse' : 'text-slate-600'}`}>
+            {isOverlap ? 'Overlap High' : 'Nominal'}
           </span>
         </div>
-      </div>
-
-      <div className="space-y-4 flex-1">
-        {history.map((item, index) => (
-          <div 
-            key={item.id} 
-            className={`group flex items-center justify-between p-4 rounded-3xl border transition-all duration-300 animate-in fade-in slide-in-from-right-4 
-              ${item.result === 'PENDING' ? 'bg-blue-500/10 border-blue-500/30 ring-1 ring-blue-500/20' : 'bg-white/5 border-white/5 hover:bg-white/10'}
-            `}
-            style={{ animationDelay: `${index * 50}ms` }}
-          >
-            <div className="flex items-center gap-4">
-              <div className={`p-2.5 rounded-2xl ${item.type === 'BUY' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
-                {item.type === 'BUY' ? <TrendingUp size={18} /> : <TrendingDown size={18} />}
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-black text-sm text-white tracking-tight">{item.pair}</span>
-                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md ${item.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                    {item.type}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-bold mt-1">
-                  <Clock size={10} className="text-blue-500" /> {item.time}
-                </div>
-              </div>
-            </div>
-
-            <div className="text-right">
-              <div className={`text-sm font-black tracking-tighter ${item.result === 'WIN' ? 'text-emerald-400' : item.result === 'LOSS' ? 'text-rose-400' : 'text-blue-400 animate-pulse'}`}>
-                {item.profit}
-              </div>
-              <button className="opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 text-[9px] text-slate-500 ml-auto uppercase font-black tracking-tighter mt-1 hover:text-blue-400">
-                View Chart <ExternalLink size={10} />
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-8 pt-6 border-t border-white/5">
-        <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5">
-          <p className="text-[10px] text-slate-500 font-semibold italic text-center leading-relaxed">
-            NEURAL LOG: Only High-Confidence (90%+) signals are recorded. Signals update automatically via WebSocket Convergence.
-          </p>
+        
+        <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden flex gap-1 p-0.5">
+          {[...Array(12)].map((_, i) => (
+            <motion.div
+              key={i}
+              className="h-full flex-1 rounded-sm"
+              animate={{ 
+                backgroundColor: i < (sessionCount * 3) ? (isOverlap ? '#3b82f6' : '#94a3b8') : '#1e293b',
+                opacity: i < (sessionCount * 3) ? 1 : 0.3
+              }}
+              transition={{ delay: i * 0.05 }}
+            />
+          ))}
         </div>
       </div>
     </div>
