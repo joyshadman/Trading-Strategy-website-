@@ -12,6 +12,8 @@ import {
   BarChart3
 } from 'lucide-react';
 
+const MotionDiv = motion.div;
+
 const SESSIONS = [
   { id: 'syd', name: 'Sydney', start: 21, end: 6, color: '#38bdf8', weight: 1, pairs: ['AUD', 'NZD', 'JPY'] },
   { id: 'tok', name: 'Tokyo', start: 0, end: 9, color: '#f472b6', weight: 1.5, pairs: ['JPY', 'AUD', 'SGD'] },
@@ -21,6 +23,7 @@ const SESSIONS = [
 
 const MarketVolatilityMonitor = () => {
   const [now, setNow] = useState(new Date());
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -57,7 +60,6 @@ const MarketVolatilityMonitor = () => {
 
   // DERIVED DATA FOR UI
   const activeSessions = sessionData.filter(s => s.isActive);
-  const activeCount = activeSessions.length;
   const volatilityScore = activeSessions.reduce((acc, curr) => acc + curr.weight, 0);
   
   const isLondonActive = sessionData.find(s => s.id === 'lon')?.isActive;
@@ -75,6 +77,16 @@ const MarketVolatilityMonitor = () => {
   };
 
   const strategy = getStrategy();
+  const copyStrategy = async () => {
+    const text = `${strategy.label} — ${strategy.desc}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Fallback: do nothing (clipboard may be blocked)
+    }
+  };
 
   return (
     <div className="w-full bg-[#020617]/40 backdrop-blur-2xl text-slate-200 p-8 rounded-[3rem] border border-white/10 shadow-2xl overflow-hidden relative group/monitor">
@@ -99,14 +111,14 @@ const MarketVolatilityMonitor = () => {
         <div className="flex items-center gap-6 bg-white/[0.03] border border-white/10 p-3 pr-8 rounded-2xl backdrop-blur-xl">
           <div className="flex -space-x-3">
             {activeSessions.map(s => (
-              <motion.div 
+              <MotionDiv 
                 key={s.id} 
                 initial={{ scale: 0 }} animate={{ scale: 1 }}
                 className="w-10 h-10 rounded-full border-2 border-[#020617] flex items-center justify-center text-[11px] font-black shadow-lg" 
                 style={{ backgroundColor: s.color, color: '#000' }}
               >
                 {s.name[0]}
-              </motion.div>
+              </MotionDiv>
             ))}
           </div>
           <div className="border-l border-white/10 pl-6">
@@ -137,7 +149,7 @@ const MarketVolatilityMonitor = () => {
 
             return (
               <div key={session.id} className="h-10 w-full bg-white/[0.02] rounded-2xl relative border border-white/5">
-                <motion.div 
+                <MotionDiv 
                   animate={{ 
                     opacity: session.isActive ? 1 : 0.1,
                     scaleY: session.isActive ? 1 : 0.85,
@@ -153,19 +165,19 @@ const MarketVolatilityMonitor = () => {
                     {session.name}
                   </span>
                   {session.isActive && <TrendingUp size={12} className="text-slate-900/40" />}
-                </motion.div>
+                </MotionDiv>
               </div>
             );
           })}
 
           {/* CURRENT TIME NEEDLE */}
-          <motion.div 
+          <MotionDiv 
             className="absolute top-[-30px] bottom-[-15px] w-[2px] bg-white z-20 shadow-[0_0_20px_#fff]"
             animate={{ left: `${(currentTimeDecimal / 24) * 100}%` }}
             transition={{ type: "spring", stiffness: 60, damping: 20 }}
           >
             <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-[4px] border-blue-600" />
-          </motion.div>
+          </MotionDiv>
         </div>
       </div>
 
@@ -199,18 +211,26 @@ const MarketVolatilityMonitor = () => {
         </div>
 
         {/* Action Button */}
-        <div className={`p-6 rounded-[2.5rem] flex flex-col justify-between group cursor-pointer transition-all ${isPowerHour ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20' : 'bg-white/[0.03] border border-white/5 hover:bg-white/[0.08]'}`}>
+        <button
+          type="button"
+          onClick={copyStrategy}
+          className={`p-6 rounded-[2.5rem] flex flex-col justify-between group cursor-pointer transition-all text-left ${isPowerHour ? 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/20' : 'bg-white/[0.03] border border-white/5 hover:bg-white/[0.08]'}`}
+          aria-label="Copy current tactical strategy"
+          title="Copy strategy"
+        >
           <div className="flex justify-between items-start">
             <Zap size={20} className={isPowerHour ? "text-white" : "text-slate-500"} />
             <ChevronRight size={18} className={`${isPowerHour ? "text-white" : "text-slate-500"} group-hover:translate-x-1 transition-transform`} />
           </div>
           <div>
-            <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${isPowerHour ? 'text-blue-100' : 'text-slate-500'}`}>Status</p>
+            <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${isPowerHour ? 'text-blue-100' : 'text-slate-500'}`}>
+              {copied ? "Copied" : "Copy Strategy"}
+            </p>
             <p className={`text-sm font-bold uppercase ${isPowerHour ? 'text-white' : 'text-slate-400'}`}>
               {nearClosing ? "Transitioning" : isPowerHour ? "High Conviction" : "Low Volatility"}
             </p>
           </div>
-        </div>
+        </button>
 
       </div>
     </div>

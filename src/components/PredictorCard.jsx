@@ -9,7 +9,9 @@ import {
   TrendingUp,
   TrendingDown,
   Gauge,
-  BarChart3
+  BarChart3,
+  Bell,
+  BellOff
 } from 'lucide-react';
 
 /**
@@ -25,42 +27,151 @@ const calculateEMA = (data, period) => {
   return ema;
 };
 
+const calculateEMASeries = (data, period) => {
+  if (data.length === 0) return [];
+  const alpha = 2 / (period + 1);
+  const seedLen = Math.min(period, data.length);
+  let ema = data.slice(0, seedLen).reduce((a, b) => a + b, 0) / seedLen;
+  const out = new Array(data.length);
+  for (let i = 0; i < seedLen; i++) out[i] = ema;
+  for (let i = seedLen; i < data.length; i++) {
+    ema = (data[i] * alpha) + (ema * (1 - alpha));
+    out[i] = ema;
+  }
+  return out;
+};
+
 const calculateRSI = (data, period = 14) => {
   if (data.length <= period) return 50;
-  let gains = 0, losses = 0;
-  for (let i = data.length - period + 1; i < data.length; i++) {
+  // Wilder-style RSI over the last `period` deltas.
+  let gains = 0;
+  let losses = 0;
+  const start = Math.max(1, data.length - period);
+  for (let i = start; i < data.length; i++) {
     const diff = data[i] - data[i - 1];
-    diff >= 0 ? (gains += diff) : (losses += Math.abs(diff));
+    if (diff >= 0) gains += diff;
+    else losses += -diff;
   }
   const avgGain = gains / period;
   const avgLoss = losses / period;
-  return avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 };
 
 const calculateMACD = (data) => {
+  // Standard MACD(12,26,9): MACD line = EMA12 - EMA26; Signal = EMA9(MACD line)
   if (data.length < 35) return { line: 0, signal: 0, hist: 0 };
-  const ema12 = calculateEMA(data, 12);
-  const ema26 = calculateEMA(data, 26);
-  const macdLine = ema12 - ema26;
-  const signalLine = calculateEMA(data.slice(-9), 9); 
+  const ema12 = calculateEMASeries(data, 12);
+  const ema26 = calculateEMASeries(data, 26);
+  const macdSeries = data.map((_, i) => ema12[i] - ema26[i]);
+  const signalSeries = calculateEMASeries(macdSeries, 9);
+  const macdLine = macdSeries[macdSeries.length - 1] ?? 0;
+  const signalLine = signalSeries[signalSeries.length - 1] ?? 0;
   return { line: macdLine, signal: signalLine, hist: macdLine - signalLine };
+};
+
+const STRONG_SIGNAL_MIN_SCORE = 94;
+const CRYPTO_CONFIRM_INTERVALS = ["1m", "5m", "15m"];
+
+const FX_API_BASE_URL = "https://api.frankfurter.dev/v1";
+
+const fetchFxRate = async ({ base, target }) => {
+  const url = `${FX_API_BASE_URL}/latest?from=${encodeURIComponent(base)}&to=${encodeURIComponent(target)}`;
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`FX HTTP ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 200)}` : ""}`);
+  }
+  const json = await res.json();
+  const rate = json?.rates?.[target];
+  if (typeof rate !== "number" || !Number.isFinite(rate)) {
+    throw new Error(`FX rate missing for ${base}/${target}`);
+  }
+  return rate;
 };
 
 const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }) => {
   const [data, setData] = useState({ price: 0, change: 0, high: 0, low: 0, volume: 0 });
   const [isScanning, setIsScanning] = useState(true);
+  const [alarmEnabled, setAlarmEnabled] = useState(false);
   const [prediction, setPrediction] = useState({ 
-    signal: 'Analyzing...', score: 0, tp: 0, sl: 0, holdTime: '...' 
+    signal: 'Analyzing...', score: 0, tp: 0, sl: 0, holdTime: '...', timeframe: '...', entryWindow: '...', confirmations: '' 
   });
 
   const socketRef = useRef(null);
   const priceHistory = useRef([]);
   const forexInterval = useRef(null);
+  const cryptoConfirmInterval = useRef(null);
+  const lastEmittedKey = useRef(null);
+  const signalGate = useRef({
+    confirmed: "Hold",
+    candidate: null,
+    streak: 0,
+    lastFlipAt: 0,
+    lastUiUpdateAt: 0,
+  });
+  const confirmState = useRef({
+    timeframes: {
+      "1m": { bias: "neutral", strength: 0 },
+      "5m": { bias: "neutral", strength: 0 },
+      "15m": { bias: "neutral", strength: 0 },
+    },
+    updatedAt: 0,
+  });
+
+  const playAlarm = React.useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.value = 0.0001;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      const now = ctx.currentTime;
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+      osc.stop(now + 0.38);
+      setTimeout(() => ctx.close().catch((e) => console.debug(e)), 650);
+    } catch (e) {
+      console.debug(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(`alarm:${symbol}`);
+      if (stored === "1") queueMicrotask(() => setAlarmEnabled(true));
+    } catch (e) {
+      console.debug(e);
+    }
+  }, [symbol]);
+
+  const setAlarm = React.useCallback(async (next) => {
+    setAlarmEnabled(next);
+    try {
+      localStorage.setItem(`alarm:${symbol}`, next ? "1" : "0");
+    } catch (e) {
+      console.debug(e);
+    }
+    if (next && "Notification" in window && Notification.permission === "default") {
+      try {
+        await Notification.requestPermission();
+      } catch (e) {
+        console.debug(e);
+      }
+    }
+  }, [symbol]);
 
   /**
    * QUANT ENGINE V9.2 - TRIPLE CONFLUENCE LOGIC
    */
-  const runQuantEngine = (current) => {
+  const runQuantEngine = React.useCallback((current) => {
     priceHistory.current.push(current);
     if (priceHistory.current.length > 200) priceHistory.current.shift();
     
@@ -91,12 +202,12 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
     // STRONG BUY: Trend is up + Momentum is positive + Not Overbought
     if (isBullishStack && macd.hist > 0 && rsi < 65 && zScore < 1.5) {
       signal = "Strong Buy";
-      score = 92 + (Math.random() * 7);
+      score = 94 + Math.min(5, Math.max(0, (macd.hist * 20))) + Math.min(2, Math.max(0, (65 - rsi) / 10));
     } 
     // STRONG SELL: Trend is down + Momentum is negative + Not Oversold
     else if (isBearishStack && macd.hist < 0 && rsi > 35 && zScore > -1.5) {
       signal = "Strong Sell";
-      score = 92 + (Math.random() * 7);
+      score = 94 + Math.min(5, Math.max(0, (-macd.hist * 20))) + Math.min(2, Math.max(0, (rsi - 35) / 10));
     }
     // MEAN REVERSION BUY (Dip Buying)
     else if (zScore < -2.2 && rsi < 30) {
@@ -117,31 +228,152 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
       score = 70 + ((100 - rsi) * 0.1);
     }
 
-    const finalScore = Math.floor(Math.min(score, 99));
-    const isBuy = signal.includes("Buy");
-    const isSell = signal.includes("Sell");
+    // --- CONFIRMATION CHECKLIST (strong signals require multiple agrees) ---
+    const confirmations = [];
+    if (isBullishStack) confirmations.push("EMA stack bullish");
+    if (isBearishStack) confirmations.push("EMA stack bearish");
+    if (macd.hist > 0) confirmations.push("MACD momentum up");
+    if (macd.hist < 0) confirmations.push("MACD momentum down");
+    if (rsi < 65) confirmations.push("RSI not overbought");
+    if (rsi > 35) confirmations.push("RSI not oversold");
+    if (Math.abs(zScore) < 1.5) confirmations.push("Volatility normal");
+
+    // --- MULTI-TIMEFRAME CONFIRMATION (CRYPTO) + EXECUTION TF (FOREX) ---
+    let tfBoost = 0;
+    let tfLabel = type === "crypto" ? "1m/5m/15m" : "10s";
+    let entryWindow =
+      type === "crypto"
+        ? "Wait 1-3 candles; enter on pullback to EMA9/EMA21 with momentum holding"
+        : "Wait for retest of EMA9/EMA21 zone; enter only if MACD momentum agrees";
+
+    if (type === "crypto") {
+      const st = confirmState.current?.timeframes || {};
+      const bias1 = st["1m"]?.bias;
+      const bias5 = st["5m"]?.bias;
+      const bias15 = st["15m"]?.bias;
+
+      const allBull = bias1 === "bull" && bias5 === "bull" && bias15 === "bull";
+      const allBear = bias1 === "bear" && bias5 === "bear" && bias15 === "bear";
+      if (allBull) confirmations.push("MTF aligned bull (1m/5m/15m)");
+      if (allBear) confirmations.push("MTF aligned bear (1m/5m/15m)");
+      const strongWord = signal.startsWith("Strong");
+      const buyWord = signal.includes("Buy");
+      const sellWord = signal.includes("Sell");
+
+      if (strongWord && buyWord && allBull) {
+        tfBoost = 4;
+        entryWindow = "Enter on 1m pullback to EMA9/EMA21; require 5m momentum to hold";
+      } else if (strongWord && sellWord && allBear) {
+        tfBoost = 4;
+        entryWindow = "Enter on 1m breakdown below EMA21; require 5m momentum to hold";
+      } else if (strongWord && (buyWord || sellWord)) {
+        // strong signal without full alignment should be downgraded
+        score = Math.min(score, 90);
+      }
+    } else {
+      // Forex: stricter trigger — require at least 4 confirmations before allowing "Strong"
+      const hasStrongWord = signal.startsWith("Strong");
+      if (hasStrongWord && confirmations.length < 4) {
+        score = Math.min(score, 90);
+        signal = signal.includes("Buy") ? "Buy" : signal.includes("Sell") ? "Sell" : signal;
+      }
+    }
+
+    const finalScore = Math.floor(Math.min(score + tfBoost, 99));
     
     // Dynamic Risk/Reward (2:1 Ratio)
     const volFactor = type === 'crypto' ? 0.028 : 0.0018; 
 
-    setPrediction({
-      signal,
-      score: finalScore,
-      tp: (isBuy ? current * (1 + volFactor) : isSell ? current * (1 - volFactor) : current).toFixed(type === 'crypto' ? 2 : 5),
-      sl: (isBuy ? current * (1 - volFactor * 0.5) : isSell ? current * (1 + volFactor * 0.5) : current).toFixed(type === 'crypto' ? 2 : 5),
-      holdTime: type === 'crypto' ? "45-120 Mins" : "15-45 Mins"
-    });
+    // --- SIGNAL STABILIZATION (prevents rapid flipping) ---
+    const now = Date.now();
+    const minStreak = type === "crypto" ? 8 : 2; // crypto ticks are frequent
+    const minFlipCooldownMs = type === "crypto" ? 60_000 : 30_000;
 
-    if (finalScore >= 94 && onSignalDetected) {
-      onSignalDetected({ 
-        pair: symbol, 
-        type: isBuy ? 'BUY' : 'SELL', 
-        price: current,
-        confidence: finalScore 
+    const gate = signalGate.current;
+    if (signal !== gate.confirmed) {
+      if (gate.candidate === signal) gate.streak += 1;
+      else {
+        gate.candidate = signal;
+        gate.streak = 1;
+      }
+      const cooldownOk = (now - gate.lastFlipAt) >= minFlipCooldownMs;
+      if (gate.streak >= minStreak && cooldownOk) {
+        gate.confirmed = signal;
+        gate.lastFlipAt = now;
+      }
+    } else {
+      gate.candidate = null;
+      gate.streak = 0;
+    }
+
+    const confirmedSignal = gate.confirmed;
+    const confirmedIsBuy = confirmedSignal.includes("Buy");
+    const confirmedIsSell = confirmedSignal.includes("Sell");
+
+    // Update UI at most ~4x/sec for crypto (prevents flicker).
+    const uiInterval = type === "crypto" ? 250 : 0;
+    if (uiInterval === 0 || (now - gate.lastUiUpdateAt) >= uiInterval) {
+      gate.lastUiUpdateAt = now;
+      setPrediction({
+        signal: confirmedSignal,
+        score: finalScore,
+        tp: (confirmedIsBuy ? current * (1 + volFactor) : confirmedIsSell ? current * (1 - volFactor) : current).toFixed(type === 'crypto' ? 2 : 5),
+        sl: (confirmedIsBuy ? current * (1 - volFactor * 0.5) : confirmedIsSell ? current * (1 + volFactor * 0.5) : current).toFixed(type === 'crypto' ? 2 : 5),
+        holdTime: type === 'crypto' ? "45-120 Mins" : "15-45 Mins",
+        timeframe: tfLabel,
+        entryWindow,
+        confirmations: confirmations.slice(0, 6).join(" • "),
       });
     }
+
+    const isStrongConfirmed = confirmedSignal === "Strong Buy" || confirmedSignal === "Strong Sell";
+    if (isStrongConfirmed && finalScore >= STRONG_SIGNAL_MIN_SCORE && onSignalDetected) {
+      const side = confirmedIsBuy ? 'BUY' : 'SELL';
+      const dedupeKey = `${symbol}:${side}:${tfLabel}:${Math.floor(Date.now() / 60000)}`; // 1-min window
+      if (lastEmittedKey.current !== dedupeKey) {
+        lastEmittedKey.current = dedupeKey;
+        const payload = {
+          pair: symbol,
+          type: side,
+          price: current,
+          confidence: finalScore,
+          strength: confirmedSignal,
+          timeframe: tfLabel,
+          entryWindow,
+          confirmations,
+          tp: (confirmedIsBuy ? current * (1 + volFactor) : current * (1 - volFactor)).toFixed(type === 'crypto' ? 2 : 5),
+          sl: (confirmedIsBuy ? current * (1 - volFactor * 0.5) : current * (1 + volFactor * 0.5)).toFixed(type === 'crypto' ? 2 : 5),
+        };
+
+        onSignalDetected(payload);
+
+        if (alarmEnabled) {
+          playAlarm();
+          if ("Notification" in window && Notification.permission === "granted") {
+            try {
+              new Notification(`${payload.strength}: ${payload.pair}`, {
+                body: `${payload.type} • ${payload.timeframe} • ${payload.confidence}%\nTP ${payload.tp} | SL ${payload.sl}`,
+              });
+            } catch (e) {
+              console.debug(e);
+            }
+          }
+        }
+      }
+    }
     setIsScanning(false);
-  };
+  }, [alarmEnabled, onSignalDetected, playAlarm, symbol, type]);
+
+  const computeBiasFromCloses = React.useCallback((closes) => {
+    const ema9 = calculateEMA(closes, 9);
+    const ema21 = calculateEMA(closes, 21);
+    const ema50 = calculateEMA(closes, 50);
+    const rsi = calculateRSI(closes, 14);
+    const macd = calculateMACD(closes);
+    const bull = ema9 > ema21 && ema21 > ema50 && macd.hist > 0 && rsi < 72;
+    const bear = ema9 < ema21 && ema21 < ema50 && macd.hist < 0 && rsi > 28;
+    return { bias: bull ? "bull" : bear ? "bear" : "neutral", strength: bull || bear ? 1 : 0 };
+  }, []);
 
   useEffect(() => {
     let isMounted = true; 
@@ -156,19 +388,41 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
           const candles = await res.json();
           if (isMounted) priceHistory.current = candles.map(c => parseFloat(c[4]));
         } else {
-          const res = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${target}`);
-          const json = await res.json();
-          const p = json.rates[target];
+          const p = await fetchFxRate({ base, target });
           if (isMounted) priceHistory.current = Array(100).fill(p).map(v => v * (1 + (Math.random() - 0.5) * 0.001));
         }
       } catch (err) {
-        console.warn("Seeding error, using live fallback.");
+        console.warn("FX seeding error:", err);
+      }
+    };
+
+    const refreshCryptoConfirm = async () => {
+      try {
+        const tfResults = {};
+        for (const interval of CRYPTO_CONFIRM_INTERVALS) {
+          const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${cleanStr}&interval=${interval}&limit=200`);
+          const candles = await res.json();
+          const closes = Array.isArray(candles) ? candles.map(c => parseFloat(c[4])) : [];
+          if (closes.length >= 60) tfResults[interval] = computeBiasFromCloses(closes);
+        }
+        confirmState.current = {
+          timeframes: {
+            "1m": tfResults["1m"] || confirmState.current.timeframes["1m"],
+            "5m": tfResults["5m"] || confirmState.current.timeframes["5m"],
+            "15m": tfResults["15m"] || confirmState.current.timeframes["15m"],
+          },
+          updatedAt: Date.now(),
+        };
+      } catch (e) {
+        console.warn("TF confirm refresh failed:", e);
       }
     };
 
     const initStream = () => {
       if (!isMounted) return;
       if (type === 'crypto') {
+        refreshCryptoConfirm();
+        cryptoConfirmInterval.current = setInterval(refreshCryptoConfirm, 60_000);
         const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${cleanStr.toLowerCase()}@ticker`);
         ws.onmessage = (e) => {
           if (!isMounted) return;
@@ -181,14 +435,14 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
       } else {
         const fetchFx = async () => {
           try {
-            const res = await fetch(`https://api.frankfurter.app/latest?from=${base}&to=${target}`);
-            const json = await res.json();
-            const p = json.rates[target];
+            const p = await fetchFxRate({ base, target });
             if (isMounted) {
               setData({ price: p, change: "0.02", high: p * 1.002, low: p * 0.998, volume: 1000 });
               runQuantEngine(p);
             }
-          } catch (e) {}
+          } catch (e) {
+            console.warn(`FX update failed for ${base}/${target}:`, e);
+          }
         };
         fetchFx();
         forexInterval.current = setInterval(fetchFx, 10000);
@@ -201,8 +455,9 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
       isMounted = false;
       if (socketRef.current) socketRef.current.close();
       if (forexInterval.current) clearInterval(forexInterval.current);
+      if (cryptoConfirmInterval.current) clearInterval(cryptoConfirmInterval.current);
     };
-  }, [symbol, type]);
+  }, [computeBiasFromCloses, runQuantEngine, symbol, type]);
 
   return (
     <div className="bg-slate-950/40 backdrop-blur-3xl border border-white/5 rounded-[2.5rem] p-7 group relative overflow-hidden shadow-2xl min-h-[500px] flex flex-col justify-between transition-all duration-700">
@@ -227,10 +482,23 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">Neural Signal Convergence</span>
             </div>
           </div>
-          <div className={`px-4 py-2 rounded-2xl text-xs font-black border backdrop-blur-xl transition-colors duration-500 ${
-            parseFloat(data.change) >= 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
-          }`}>
-            {parseFloat(data.change) >= 0 ? '+' : ''}{data.change}%
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setAlarm(!alarmEnabled)}
+              className={`p-2 rounded-2xl border backdrop-blur-xl transition-colors duration-500 ${
+                alarmEnabled ? 'bg-blue-500/15 border-blue-500/25 text-blue-300' : 'bg-white/5 border-white/10 text-slate-500 hover:text-slate-300'
+              }`}
+              aria-label={alarmEnabled ? "Disable alarm" : "Enable alarm"}
+              title={alarmEnabled ? "Alarm enabled" : "Enable alarm"}
+            >
+              {alarmEnabled ? <Bell size={16} /> : <BellOff size={16} />}
+            </button>
+            <div className={`px-4 py-2 rounded-2xl text-xs font-black border backdrop-blur-xl transition-colors duration-500 ${
+              parseFloat(data.change) >= 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+            }`}>
+              {parseFloat(data.change) >= 0 ? '+' : ''}{data.change}%
+            </div>
           </div>
         </div>
 
@@ -257,6 +525,13 @@ const PredictorCard = ({ symbol = "BTCUSDT", type = 'crypto', onSignalDetected }
             <StatBox label="Confidence" value={`${prediction.score}%`} color="text-white" icon={<BrainCircuit size={16}/>} />
             <StatBox label="Target (TP)" value={prediction.tp} color="text-emerald-400" icon={<Target size={16}/>} />
             <StatBox label="Defense (SL)" value={prediction.sl} color="text-rose-400" icon={<ShieldAlert size={16}/>} />
+            {type === "crypto" && (
+              <>
+                <StatBox label="Timeframe" value={prediction.timeframe} color="text-slate-200" icon={<Activity size={16}/>} />
+                <StatBox label="Entry Window" value={prediction.entryWindow} color="text-slate-200" icon={<Zap size={16}/>} />
+                <StatBox label="Confirmations" value={prediction.confirmations || "…"} color="text-slate-400" icon={<BrainCircuit size={16}/>} />
+              </>
+            )}
           </div>
         )}
       </div>

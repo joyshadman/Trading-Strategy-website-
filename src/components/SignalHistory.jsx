@@ -4,13 +4,24 @@ import {
   History, 
   Clock, 
   ExternalLink, 
-  Zap, 
   TrendingUp, 
   TrendingDown,
   Flame,
   Layers,
   BarChart3
 } from 'lucide-react';
+
+const MotionDiv = motion.div;
+
+const getTradingViewSymbol = (pair) => {
+  const clean = String(pair || "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  if (!clean) return null;
+  // Crypto (common format in this app)
+  if (clean.endsWith("USDT")) return `BINANCE:${clean}`;
+  // Forex (e.g. EURUSD, GBPJPY, EURGBP)
+  if (clean.length === 6) return `FX:${clean}`;
+  return clean;
+};
 
 const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
   const [history, setHistory] = useState([
@@ -24,13 +35,23 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
   const isOverlap = activeSessions.includes('London') && activeSessions.includes('New York');
   const sessionCount = activeSessions.length;
 
-  useEffect(() => {
-    // 1. Strict Filter: Only log high confidence and existing signals
-    if (!currentSignal || currentSignal.confidence < 90) return;
+  const openProof = (pair) => {
+    const tvSymbol = getTradingViewSymbol(pair);
+    if (!tvSymbol) return;
+    const url = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
 
-    // 2. Generate unique key (Pair + Type + 5-min time window to prevent re-logging same move)
-    const timeWindow = new Date().getMinutes() - (new Date().getMinutes() % 5);
-    const signalKey = `${currentSignal.pair}-${currentSignal.type}-${timeWindow}`;
+  useEffect(() => {
+    // Strong signals only
+    if (!currentSignal) return;
+    const isStrong = currentSignal.strength === "Strong Buy" || currentSignal.strength === "Strong Sell";
+    if (!isStrong) return;
+    if (typeof currentSignal.confidence === "number" && currentSignal.confidence < 90) return;
+
+    // Dedupe (Pair + Type + TF + 2-min window)
+    const timeWindow = Math.floor(Date.now() / 120000);
+    const signalKey = `${currentSignal.pair}-${currentSignal.type}-${currentSignal.timeframe || "na"}-${timeWindow}`;
 
     if (!processedSignals.current.has(signalKey)) {
       processedSignals.current.add(signalKey);
@@ -40,12 +61,21 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
         pair: currentSignal.pair,
         type: currentSignal.type,
         result: 'PENDING',
-        profit: 'Targeting...',
+        profit: `${currentSignal.confidence ?? "--"}%`,
+        strength: currentSignal.strength,
+        timeframe: currentSignal.timeframe,
+        entryWindow: currentSignal.entryWindow,
+        tp: currentSignal.tp,
+        sl: currentSignal.sl,
+        price: currentSignal.price,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         overlap: isOverlap 
       };
 
-      setHistory(prev => [newEntry, ...prev].slice(0, 6)); // Keep log short & clean
+      // Lint rule in this repo discourages direct setState inside effects.
+      queueMicrotask(() => {
+        setHistory(prev => [newEntry, ...prev].slice(0, 20)); // Keep log strong-only
+      });
     }
   }, [currentSignal, isOverlap]);
 
@@ -55,7 +85,7 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
       {/* Background Pulse during Overlap */}
       <AnimatePresence>
         {isOverlap && (
-          <motion.div 
+          <MotionDiv 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="absolute -top-10 -right-10 w-64 h-64 bg-blue-600/5 blur-[100px] pointer-events-none"
           />
@@ -83,8 +113,8 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
 
       <div className="space-y-3 flex-1 relative z-10 overflow-y-auto no-scrollbar pr-2">
         <AnimatePresence initial={false}>
-          {history.map((item, index) => (
-            <motion.div 
+          {history.map((item) => (
+            <MotionDiv 
               key={item.id} 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -108,22 +138,46 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
                     <span className={`text-[8px] font-black px-2 py-0.5 rounded-md border ${item.type === 'BUY' ? 'border-emerald-500/30 text-emerald-400' : 'border-rose-500/30 text-rose-400'}`}>
                       {item.type}
                     </span>
+                    {item.timeframe && (
+                      <span className="text-[8px] font-black px-2 py-0.5 rounded-md border border-white/10 text-slate-400 uppercase">
+                        {item.timeframe}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-tighter">
                     <Clock size={10} className="text-blue-500/50" /> {item.time}
                   </div>
+                  {item.entryWindow && (
+                    <div className="text-[9px] text-slate-500 font-bold mt-1 uppercase tracking-tight">
+                      {item.entryWindow}
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="text-right">
-                <div className={`text-sm font-black tracking-tighter ${item.result === 'WIN' ? 'text-emerald-400' : item.result === 'LOSS' ? 'text-rose-400' : 'text-blue-400 animate-pulse'}`}>
+                <div className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-1">
+                  {item.strength || "Strong Signal"}
+                </div>
+                <div className={`text-sm font-black tracking-tighter ${item.type === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {item.profit}
                 </div>
-                <button className="opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 text-[9px] text-blue-500/60 ml-auto uppercase font-black tracking-tighter mt-1 hover:text-blue-400">
+                {(item.tp || item.sl) && (
+                  <div className="text-[10px] text-slate-500 font-bold mt-1">
+                    {item.tp ? `TP ${item.tp}` : ""}{item.tp && item.sl ? " • " : ""}{item.sl ? `SL ${item.sl}` : ""}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openProof(item.pair)}
+                  className="opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 text-[9px] text-blue-500/60 ml-auto uppercase font-black tracking-tighter mt-1 hover:text-blue-400"
+                  aria-label={`Open chart proof for ${item.pair}`}
+                  title="Open TradingView chart"
+                >
                   Proof <ExternalLink size={10} />
                 </button>
               </div>
-            </motion.div>
+            </MotionDiv>
           ))}
         </AnimatePresence>
       </div>
@@ -142,7 +196,7 @@ const SignalHistory = ({ currentSignal, activeSessions = [] }) => {
         
         <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden flex gap-1 p-0.5">
           {[...Array(12)].map((_, i) => (
-            <motion.div
+            <MotionDiv
               key={i}
               className="h-full flex-1 rounded-sm"
               animate={{ 

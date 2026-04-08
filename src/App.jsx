@@ -7,6 +7,8 @@ import PredictorCard from './components/PredictorCard';
 import SignalHistory from './components/SignalHistory';
 import MarketTimeline from './components/MarketTimeline';
 
+const MotionDiv = motion.div;
+
 // Accurate 2026 Forex Session Times (UTC)
 const MARKET_SESSIONS = [
   { name: 'Sydney', open: 21, close: 6, color: 'from-blue-400 to-cyan-400' },
@@ -148,13 +150,13 @@ export default function App() {
         <div className="lg:col-span-8 space-y-6">
           <AnimatePresence>
             {marketMetrics.isWeekend && (
-              <motion.div 
+              <MotionDiv 
                 initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
                 className="bg-amber-500/10 border border-amber-500/20 p-4 rounded-2xl flex items-center gap-3 text-amber-200"
               >
                 <AlertCircle size={18} />
                 <p className="text-xs font-bold uppercase tracking-wide">Liquidity Warning: Markets are currently in Weekend Mode.</p>
-              </motion.div>
+              </MotionDiv>
             )}
           </AnimatePresence>
 
