@@ -1,0 +1,31 @@
+{
+  "name": "trading-bot",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/server",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api,worker -c cyan,green,magenta \"npm -w @trading/web run dev\" \"npm -w @trading/server run dev:api\" \"npm -w @trading/server run dev:worker\"",
+    "build": "npm -w @trading/shared run build && npm -w @trading/server run build && npm -w @trading/web run build",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:migrate": "npm -w @trading/server run db:migrate",
+    "db:seed": "npm -w @trading/server run db:seed"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  },
+  "overrides": {
+    "vite": "$vite"
+  }
+}

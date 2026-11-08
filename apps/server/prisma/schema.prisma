@@ -1,0 +1,352 @@
+// Data model for the trading bot (spec 0001).
+// Money and sizes: Decimal(30,12). Percentages: Decimal(10,4), stored as percent (2 = 2%).
+// Every DateTime is timestamptz. History is never deleted (onDelete: Restrict everywhere).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AssetClass {
+  crypto
+  forex
+}
+
+enum AccountMode {
+  paper
+  live
+}
+
+enum Side {
+  buy
+  sell
+}
+
+enum OrderType {
+  market
+  limit
+  stop
+}
+
+enum OrderStatus {
+  pending
+  open
+  partially_filled
+  filled
+  canceled
+  rejected
+}
+
+// Why an order exists (spec 0003). A position's closeReason is one of these, never `entry`.
+enum OrderReason {
+  entry
+  stop_loss
+  take_profit
+  opposite_signal
+  kill
+  // You closed it from the control panel (spec 0004).
+  manual
+}
+
+enum PositionStatus {
+  open
+  closed
+}
+
+enum SignalOutcome {
+  ordered
+  skipped
+}
+
+enum BotState {
+  idle
+  running
+  killed
+}
+
+enum CommandType {
+  start
+  stop
+  kill
+  // Control panel commands (spec 0004), run inside the trader's queue.
+  enable_strategy
+  disable_strategy
+  close_position
+}
+
+enum CommandStatus {
+  pending
+  done
+  failed
+}
+
+enum FeedState {
+  backfilling
+  live
+  stale
+  closed
+  error
+}
+
+model Instrument {
+  id          String     @id @default(uuid()) @db.Uuid
+  symbol      String
+  assetClass  AssetClass
+  venue       String
+  // The venue's own name for the pair: BTCUSDT on binance, EUR_USD on oanda (spec 0002).
+  venueSymbol String
+  baseAsset   String
+  quoteAsset  String
+  tickSize    Decimal    @db.Decimal(30, 12)
+  minQty      Decimal    @db.Decimal(30, 12)
+  active      Boolean    @default(true)
+
+  candles    Candle[]
+  strategies StrategyInstrument[]
+  signals    Signal[]
+  orders     Order[]
+  positions  Position[]
+  feedStatus FeedStatus?
+
+  @@unique([venue, symbol])
+  @@unique([venue, venueSymbol])
+}
+
+// Feed health per instrument, written by the worker, read by the API (spec 0002).
+model FeedStatus {
+  instrumentId String    @id @db.Uuid
+  status       FeedState @default(backfilling)
+  lastTickAt   DateTime? @db.Timestamptz(3)
+  lastCandleAt DateTime? @db.Timestamptz(3)
+  lastError    String?
+  updatedAt    DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+}
+
+model Candle {
+  instrumentId String   @db.Uuid
+  timeframe    String
+  openTime     DateTime @db.Timestamptz(3)
+  open         Decimal  @db.Decimal(30, 12)
+  high         Decimal  @db.Decimal(30, 12)
+  low          Decimal  @db.Decimal(30, 12)
+  close        Decimal  @db.Decimal(30, 12)
+  volume       Decimal  @db.Decimal(30, 12)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  @@id([instrumentId, timeframe, openTime])
+}
+
+model Account {
+  id        String      @id @default(uuid()) @db.Uuid
+  name      String      @unique
+  mode      AccountMode
+  venue     String
+  currency  String
+  balance   Decimal     @db.Decimal(30, 12)
+  equity    Decimal     @db.Decimal(30, 12)
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+
+  strategies Strategy[]
+  orders     Order[]
+  positions  Position[]
+  snapshots  EquitySnapshot[]
+}
+
+// Account value every 15 minutes on the quarter hour UTC, for drawdown stats (spec 0003).
+model EquitySnapshot {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountId     String   @db.Uuid
+  balance       Decimal  @db.Decimal(30, 12)
+  equity        Decimal  @db.Decimal(30, 12)
+  openPositions Int
+  takenAt       DateTime @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, takenAt])
+}
+
+model Strategy {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  kind      String
+  params    Json
+  timeframe String
+  enabled   Boolean  @default(false)
+  accountId String   @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  account     Account              @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  instruments StrategyInstrument[]
+  risk        RiskSettings?
+  signals     Signal[]
+  orders      Order[]
+  positions   Position[]
+  commands    BotCommand[]
+}
+
+model StrategyInstrument {
+  strategyId   String @db.Uuid
+  instrumentId String @db.Uuid
+
+  strategy   Strategy   @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  @@id([strategyId, instrumentId])
+}
+
+model RiskSettings {
+  strategyId      String  @id @db.Uuid
+  stopLossPct     Decimal @db.Decimal(10, 4)
+  takeProfitPct   Decimal @db.Decimal(10, 4)
+  maxPositionSize Decimal @db.Decimal(30, 12)
+  maxOpenTrades   Int
+  // An amount in the account's currency, not a percent.
+  dailyLossLimit  Decimal @db.Decimal(30, 12)
+  // Percent of equity risked per trade (1 = 1%), spec 0003.
+  riskPerTradePct Decimal @default(1) @db.Decimal(10, 4)
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+}
+
+model Signal {
+  id           String        @id @default(uuid()) @db.Uuid
+  strategyId   String        @db.Uuid
+  instrumentId String        @db.Uuid
+  side         Side
+  indicators   Json
+  outcome      SignalOutcome
+  skipReason   String?
+  candleTime   DateTime      @db.Timestamptz(3)
+  createdAt    DateTime      @default(now()) @db.Timestamptz(3)
+
+  strategy   Strategy   @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  order      Order?
+
+  // A candle is evaluated at most once per strategy (spec 0003). candleTime is the 15m open time.
+  @@unique([strategyId, instrumentId, candleTime])
+  @@index([strategyId, createdAt])
+}
+
+model Order {
+  id            String      @id @default(uuid()) @db.Uuid
+  // Generated before the order is sent; unique so a retry can never double order.
+  clientOrderId String      @unique
+  accountId     String      @db.Uuid
+  strategyId    String      @db.Uuid
+  instrumentId  String      @db.Uuid
+  signalId      String?     @unique @db.Uuid
+  side          Side
+  type          OrderType
+  qty           Decimal     @db.Decimal(30, 12)
+  price         Decimal?    @db.Decimal(30, 12)
+  status        OrderStatus @default(pending)
+  reason        OrderReason
+  // Entry orders get it in the transaction that inserts the Position; exit orders (kill
+  // included) have it from creation. clientOrderId is e:<signalId> or x:<positionId>.
+  positionId    String?     @db.Uuid
+  venueOrderId  String?
+  createdAt     DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime    @updatedAt @db.Timestamptz(3)
+
+  account    Account    @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  strategy   Strategy   @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  signal     Signal?    @relation(fields: [signalId], references: [id], onDelete: Restrict)
+  position   Position?  @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  fills      Fill[]
+
+  @@index([accountId, status])
+  @@index([positionId])
+}
+
+model Fill {
+  id          String   @id @default(uuid()) @db.Uuid
+  orderId     String   @db.Uuid
+  price       Decimal  @db.Decimal(30, 12)
+  qty         Decimal  @db.Decimal(30, 12)
+  fee         Decimal  @db.Decimal(30, 12)
+  feeCurrency String
+  filledAt    DateTime @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model Position {
+  id              String         @id @default(uuid()) @db.Uuid
+  accountId       String         @db.Uuid
+  instrumentId    String         @db.Uuid
+  strategyId      String         @db.Uuid
+  side            Side
+  qty             Decimal        @db.Decimal(30, 12)
+  // Volume weighted average of the opening fills.
+  entryPrice      Decimal        @db.Decimal(30, 12)
+  stopLoss        Decimal?       @db.Decimal(30, 12)
+  takeProfit      Decimal?       @db.Decimal(30, 12)
+  status          PositionStatus @default(open)
+  exitPrice       Decimal?       @db.Decimal(30, 12)
+  closeReason     OrderReason?
+  // All fees paid on this position, in USD (entry, then entry + exit).
+  fees            Decimal        @default(0) @db.Decimal(30, 12)
+  // Quote currency to USD at entry (margin) and at close (realized PnL). 1 for USD and USDT.
+  entryQuoteToUsd Decimal        @db.Decimal(30, 12)
+  closeQuoteToUsd Decimal?       @db.Decimal(30, 12)
+  // USD after both fees.
+  realizedPnl     Decimal?       @db.Decimal(30, 12)
+  // Written by the worker every 5 seconds while open: exit side price and USD PnL net of fees paid.
+  markPrice       Decimal?       @db.Decimal(30, 12)
+  unrealizedPnl   Decimal?       @db.Decimal(30, 12)
+  markedAt        DateTime?      @db.Timestamptz(3)
+  openedAt        DateTime       @default(now()) @db.Timestamptz(3)
+  closedAt        DateTime?      @db.Timestamptz(3)
+
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  instrument Instrument   @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  strategy   Strategy     @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  orders     Order[]
+  commands   BotCommand[]
+
+  // Plus a partial unique index in the migration: one open position per (strategyId, instrumentId).
+  @@index([accountId, status])
+}
+
+model BotRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  state           BotState  @default(idle)
+  startedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  stoppedAt       DateTime? @db.Timestamptz(3)
+  stopReason      String?
+  lastHeartbeatAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([startedAt])
+}
+
+// The target is set by type (a CHECK in the migration, spec 0004): strategyId for
+// enable_strategy and disable_strategy, positionId for close_position, neither otherwise.
+model BotCommand {
+  id         String        @id @default(uuid()) @db.Uuid
+  type       CommandType
+  status     CommandStatus @default(pending)
+  error      String?
+  strategyId String?       @db.Uuid
+  positionId String?       @db.Uuid
+  createdAt  DateTime      @default(now()) @db.Timestamptz(3)
+  handledAt  DateTime?     @db.Timestamptz(3)
+
+  strategy Strategy? @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  position Position? @relation(fields: [positionId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+}
